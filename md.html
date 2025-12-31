@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.json">
+<title>Secure Text</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light dark;
+    background-color: #fff;
+    color: #161616;
+
+    @media (prefers-color-scheme: dark) {
+      background-color: #000;
+      color: #fff;
+    }
+  }
+
+  article {
+    outline: none;
+    padding: 18px max(18px, calc(50vw - 400px));
+    width: 100%;
+    min-height: 100vh;
+    font: 18px / 1.5 system-ui;
+    tab-size: 4;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    white-space: pre-wrap;
+    text-wrap-style: stable;
+    overflow-wrap: break-word;
+  }
+
+  .md-code {
+    font-family: monospace;
+  }
+
+  .md-codeblock {
+    font-family: monospace;
+  }
+
+  .md-bold {
+    font-weight: bold;
+  }
+
+  .md-strike {
+    text-decoration: line-through;
+  }
+
+  .md-italic {
+    font-style: italic;
+  }
+
+  .md-link {
+    color: #007bff;
+    text-decoration: underline;
+  }
+
+  .md-h1,
+  .md-h2,
+  .md-h3,
+  .md-h4,
+  .md-h5,
+  .md-h6 {
+    display: block;
+    font-weight: 700;
+    margin: 0.5em 0;
+  }
+
+  .md-h1 {
+    font-size: 2em;
+  }
+
+  .md-h2 {
+    font-size: 1.5em;
+  }
+
+  .md-h3 {
+    font-size: 1.25em;
+  }
+
+  .md-h4 {
+    font-size: 1.1em;
+  }
+
+  .md-h5 {
+    font-size: 1em;
+  }
+
+  .md-h6 {
+    font-size: 0.9em;
+  }
+</style>
+<article contenteditable="plaintext-only" spellcheck></article>
+<script>
+  const article = document.querySelector('article')
+  article.addEventListener('input', debounce(500, save))
+  article.addEventListener('blur', save)
+  addEventListener('DOMContentLoaded', load)
+  addEventListener('hashchange', load)
+  addEventListener('load', () => new MutationObserver(save).observe(article, {attributeFilter: ['style']}))
+  addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      e.preventDefault()
+      download()
+    }
+  })
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js')
+  }
+
+  async function load() {
+    try {
+      if (location.hash !== '') await set(location.hash)
+      else {
+        await set(localStorage.getItem('hash') ?? '')
+        if (article.textContent) history.replaceState({}, '', await get())
+        article.focus()
+      }
+    } catch (e) {
+      article.textContent = ''
+      article.removeAttribute('style')
+      article.focus()
+    }
+    updateTitle()
+  }
+
+  async function save() {
+    const hash = await get()
+    if (location.hash !== hash) history.replaceState({}, '', hash)
+    try { localStorage.setItem('hash', hash) } catch (e) {}
+    updateTitle()
+  }
+
+  async function set(hash) {
+    if (!hash) return
+    const [content, style] = (await decompress(hash.slice(1))).split('\x00')
+    article.textContent = ''
+    article.appendChild(parseMarkdown(content))
+    if (style) article.setAttribute('style', style)
+  }
+
+  async function get() {
+    const style = article.getAttribute('style')
+    const content = article.textContent + (style !== null ? '\x00' + style : '')
+    return '#' + await compress(content)
+  }
+
+  function updateTitle() {
+    const match = article.textContent.match(/^\n*#(.+)\n/)
+    document.title = match?.[1] ?? 'Secure Text'
+  }
+
+  async function compress(string) {
+    const byteArray = new TextEncoder().encode(string)
+    const stream = new CompressionStream('deflate-raw')
+    const writer = stream.writable.getWriter()
+    writer.write(byteArray)
+    writer.close()
+    const buffer = await new Response(stream.readable).arrayBuffer()
+    return new Uint8Array(buffer).toBase64({alphabet: 'base64url'})
+  }
+
+  async function decompress(b64) {
+    const byteArray = Uint8Array.fromBase64(b64, {alphabet: 'base64url'})
+    const stream = new DecompressionStream('deflate-raw')
+    const writer = stream.writable.getWriter()
+    writer.write(byteArray)
+    writer.close()
+    const buffer = await new Response(stream.readable).arrayBuffer()
+    return new TextDecoder().decode(buffer)
+  }
+
+  function debounce(ms, fn) {
+    let timer
+    return (...args) => {
+      clearTimeout(timer)
+      timer = setTimeout(() => fn(...args), ms)
+    }
+  }
+
+  async function download() {
+    updateTitle()
+    const doc = document.documentElement.cloneNode(true)
+    doc.querySelectorAll('script').forEach(s => s.remove())
+    doc.querySelector('article').removeAttribute('contenteditable')
+    const html = '<!DOCTYPE html>\n' + doc.outerHTML
+
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await showSaveFilePicker({
+          suggestedName: document.title + '.html',
+          types: [{
+            description: 'HTML file',
+            accept: {'text/html': ['.html']},
+          }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(html)
+        await writable.close()
+        return
+      } catch (e) {
+        if (e.name === 'AbortError') return
+      }
+    }
+
+    const blob = new Blob([html], {type: 'text/html'})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = document.title + '.html'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function parseMarkdown(input) {
+    const frag = document.createDocumentFragment()
+
+    const matchers = [
+      {name: 'md-codeblock', re: /```[^\n]*\n[\s\S]*?\n```/y},
+      {name: 'md-codeblock', re: /~~~[^\n]*\n[\s\S]*?\n~~~/y},
+      {name: 'md-h1', re: /^#[ \t]+[^\n]*$/my},
+      {name: 'md-h2', re: /^##[ \t]+[^\n]*$/my},
+      {name: 'md-h3', re: /^###[ \t]+[^\n]*$/my},
+      {name: 'md-h4', re: /^####[ \t]+[^\n]*$/my},
+      {name: 'md-h5', re: /^#####[ \t]+[^\n]*$/my},
+      {name: 'md-h6', re: /^######[ \t]+[^\n]*$/my},
+      {name: 'md-code', re: /`[^`\n]*`/y},
+      {name: 'md-bold', re: /\*\*[^*\n]+?\*\*/y},
+      {name: 'md-strike', re: /~~[^~\n]+?~~/y},
+      {name: 'md-italic', re: /\*[^*\n]+?\*/y},
+      {name: 'md-link', re: /\[[^\]\n]+?\]\([^) \n]+?\)/y}
+    ]
+
+    const specials = ['`', '~', '*', '[', '#']
+
+    let i = 0
+    while (i < input.length) {
+      let matched = false
+
+      for (const m of matchers) {
+        m.re.lastIndex = i
+        const res = m.re.exec(input)
+        if (res && res.index === i) {
+          const raw = res[0]
+          const span = document.createElement('span')
+          span.className = m.name
+          span.textContent = raw
+          frag.appendChild(span)
+          i += raw.length
+          matched = true
+          break
+        }
+      }
+
+      if (matched) continue
+
+      let next = input.length
+      for (const ch of specials) {
+        const idx = input.indexOf(ch, i)
+        if (idx !== -1 && idx < next) next = idx
+      }
+
+      if (next === i) {
+        frag.appendChild(document.createTextNode(input[i]))
+        i += 1
+        continue
+      }
+
+      frag.appendChild(document.createTextNode(input.slice(i, next)))
+      i = next
+    }
+
+    return frag
+  }
+</script>
